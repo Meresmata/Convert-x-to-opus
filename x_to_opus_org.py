@@ -30,8 +30,8 @@ def isaudio(file: str)->bool:
     return True if end in audio_files else False
 
 
-def create_io_struct_list(in_files: list, start_name_fn: tp.Any, end_name_fn: tp.Any,
-                         out_path_dir: tp.Optional[str])->list:
+def create_io_struct_list(in_files: list, start_name_fn: tp.Callable[[str, tp.Optional[str]], str],
+                          end_name_fn: tp.Callable[[str, str, str], str], out_path_dir: tp.Optional[str])->list:
     """
     create a list containing a list of in and out file names
     :type in_files: list
@@ -175,8 +175,7 @@ if __name__ == '__main__':
     [os.remove(x[0]) for x in list(filter(lambda x: x[2], in_out_files))]
     # prepare renaming
     left_list = list(filter(lambda x: (isvideo(x) or isaudio(x)) and os.path.isfile(x), get_file_names(p_dir)))
-    file_num = len(left_list)
-    name_list = map(rename_ending, left_list, [".opus"]*file_num, [".ogg"]*file_num)
+    name_list = map(lambda x: rename_ending(x, ".opus", ".ogg"), left_list)
 
     # rename
-    map(lambda x: os.rename(x[0]), name_list)
+    map(lambda x, y: os.rename(x, y), left_list, name_list)
