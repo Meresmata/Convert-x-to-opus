@@ -1,10 +1,11 @@
-import os
-import typing as tp
-import ffmpy
-import subprocess
-import multiprocessing.dummy as mp_thread
 # import multiprocessing as mp
 import getpass
+import multiprocessing.dummy as mp_thread
+import os
+import subprocess
+import typing as tp
+
+import ffmpy
 
 
 def isvideo(file: str)->bool:
@@ -29,7 +30,7 @@ def isaudio(file: str)->bool:
     return True if end in audio_files else False
 
 
-def create_io_struct_list(in_files: list, start_name_fn: function, end_name_fn: function,
+def create_io_struct_list(in_files: list, start_name_fn: tp.Any, end_name_fn: tp.Any,
                          out_path_dir: tp.Optional[str])->list:
     """
     create a list containing a list of in and out file names
