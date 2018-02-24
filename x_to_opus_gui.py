@@ -5,6 +5,7 @@ import multiprocessing.dummy as mp_thread
 # import multiprocessing as mp
 import tkinter as tk
 import getpass
+import typing as tp
 """
 convertes all audio, movie files
 of a given root directory into .opus
@@ -12,230 +13,310 @@ of a given root directory into .opus
 requires: ffmpeg incl. libopus
 """
 
-def isvideo(file: str):
+
+def isvideo(file: str)->bool:
     """
-    compares with known video files format endings
+    test whether param file is has a known ending for video formats
     :param file: str
     :return: bool
     """
     video_files = ["avi", "mp4", "webm"]
     end = file.rsplit(".", 1)[-1]
-    if end in video_files:
-        return True
-    else:
-        return False
+    return True if end in video_files else False
 
 
-def isaudio(file: str):
+def isaudio(file: str)->bool:
     """
-    compares with known audio files format endings
+    test whether param file is has a known ending for audio formats
     :param file: str
     :return: bool
     """
     audio_files = ["mp3", "aac", "ogg", "m4a"]
     end = file.rsplit(".", 1)[-1]
-    if end in audio_files:
-        return True
-    else:
-        return False
+    return True if end in audio_files else False
 
 
-def create_audiofile_list(file_list: list, path_dir: str, sort_size: bool = False, sort_reverse: bool = False):
+def create_io_struct_list(in_files: list, start_name_fn: tp.Callable[[str, tp.Optional[str]], str],
+                          end_name_fn: tp.Callable[[str, str, str], str], out_path_dir: tp.Optional[str])->list:
     """
-    create list of files to be converted
-    sort with respect to size, or name
-    sort descending, or undescending
-    :type file_list: list
-    :type path_dir: str
-    :type sort_size: bool
-    :type sort_reverse: bool
+    create a list containing a list of in and out file names
+    :type in_files: list
+    :type start_name_fn: function
+    :type end_name_fn: function
+    :type out_path_dir: str
+    :return: list
+    """
+    media_files = list(filter(lambda x: (isaudio(x) or isvideo(x)) and os.path.isfile(x), in_files))
+    return [[x, end_name_fn(start_name_fn(x, out_path_dir), ".ogg", ".opus"), False] for x in media_files]
+
+
+def convert(pool_map_tuple: tuple)->None:
+    """
+    Does the actual conversion
+    :param pool_map_tuple: tuple of list(input file name, output filename, conversion flag),
+     function for codex, function for bit rate
     :return: None
     """
-    # for f in os.listdir(path_dir):
-    #   path_name = path_dir + r"/" + f
-    #    if os.path.isfile(path_name) and (isvideo(f) or isaudio(f)):
-    #        file_list.append(path_name)
-
-    for rootdir, subdirs, files in os.walk(path_dir):
-        """
-        get files root folder
-        """
-        for name in files:
-            path_name = rootdir + r"/" + name
-            if os.path.isfile(path_name) and (isvideo(name) or isaudio(name)):
-                file_list.append(path_name)
-
-    if sort_size:
-        file_list.sort(key=os.path.getsize, reverse=sort_reverse)
+    # unpack
+    file, codec_fn, bit_rate_fn = pool_map_tuple
+    # calculate the bit_rate_fn bit rate for the new file
+    out_bit_rate: int = 0
+    in_bit_rate = bit_rate_fn(file[0])
+    in_codec = codec_fn(file[0])
+    if codec_fn(file[0]) == "vorbis" or "aac":
+        out_bit_rate = (lambda x: 54000 if x <= 64001 else 64000)(in_bit_rate)
     else:
-        file_list.sort(key=str.lower, reverse=sort_reverse)
-    pass
+        out_bit_rate = (lambda x: 54000 if x <= 100001 else 64000)(in_bit_rate)
+
+    if (in_bit_rate < out_bit_rate) or in_codec == "opus":
+        return
+
+    # set conversion flag
+    file[2] = True
+
+    # parse param for conversion
+    o_command: str = '-v error -vn -vbr constrained -b:a ' + str(out_bit_rate) + \
+                     ' -compression_level 10 -acodec libopus'
+    ff = ffmpy.FFmpeg(
+        inputs={file[0]: None},
+        outputs={file[1]: o_command}
+    )
+
+    # convert
+    ff.run()
 
 
-def convert(file: str):
+def get_in_bit_rate(file: str)-> int:
     """
-    convertes video/audio files into opus only
-    :param file: str
-    :return: None
+    Returns the bitrate of file with help of ffprobe
+    :param file: str filename
+    :return: int bit rate
     """
-    if dst_opt_check_val.get():
-        o_dir = dst_folder_val.get()
-    else:
-        o_dir = None
-
     p_command: str = "-v error -select_streams a:0 -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1"
     probe = ffmpy.FFprobe(inputs={file: p_command})
     try:
         bit_rate = int((probe.run(stdout=subprocess.PIPE))[0])
-    except Exception:
-        return
+    except ValueError:
+        bit_rate = -1
+    return bit_rate
 
+
+def get_file_names(path: str)->list:
+    """
+    return a list with all files from root folder path
+    :param path: str path to selected root folder
+    :return: list
+    """
+    file_list: list = []
+    for rootdir, subdirs, files in os.walk(path):
+        for name in files:
+            file_list.append(rootdir + r"/" + name)
+    return file_list
+
+
+def get_in_codec(file: str)-> str:
+    """
+    return the audio codec name of file
+    :param file: str file name
+    :return: str codex name
+    """
     # https://github.com/Ch00k/ffmpy/blob/master/docs/examples.rst
     p_command = "-v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1"
     probe = ffmpy.FFprobe(inputs={file: p_command})
-    codec = (probe.run(stdout=subprocess.PIPE))[0].strip()
-
-    # calculate the bit rate for the new file
-    out_bit_rate: int = 0
-    if codec == "vorbis" or "aac":
-        out_bit_rate = (lambda x: 54000 if x <= 64001 else 64000)(bit_rate)
-    else:
-        out_bit_rate = (lambda x: 54000 if x <= 100001 else 64000)(bit_rate)
-
-    if bit_rate < out_bit_rate:
-        out_bit_rate = bit_rate
-
-    # convert into new filename, incl. new folder
-    outfilename = file.rsplit(".", 1)[0] + ".ogg"
-
-    # if ending is .ogg but opus as codec
-    if outfilename == file:
-        outfilename = file.rsplit(".", 1)[0] + ".opus"
-
-    # if output directory is specified
-    if o_dir is not None:
-        outfilename = o_dir + r"/" + outfilename.rsplit(r"/", 1)[-1]
-
-    # convert if not already done
-    if codec != "opus":
-        o_command: str = '-v error -vn -vbr on -b:a ' + str(out_bit_rate) + ' -compression_level 10 -acodec libopus'
-        ff = ffmpy.FFmpeg(
-            inputs={file: None},
-            outputs={outfilename: o_command}
-        )
-
-        ff.run()
-        os.remove(file)
-        if outfilename.endswith(".opus"):
-            os.rename(outfilename, outfilename.rsplit(".", 1)[0] + ".ogg")
-
-    done.set(done.get()+1)
+    return (probe.run(stdout=subprocess.PIPE))[0].strip()
 
 
-def opt_act(event):
+def rename_ending(file: str, condition: str, ending: str)-> str:
     """
-    shall enable/disable output directory choice
-    depending on Checkbox value
-    :param event: event
-    :return: None
+    conditional renaming of file name ending
+    :param file: str file name
+    :param condition: str file name ending to be compared with
+    :param ending: str new ending
+    :return: str
     """
-    if not dst_opt_check_val.get():
-
-        dst_label.config(state='active')
-        dst_folder.config(state='normal')
-    else:
-        dst_label.config(state='disabled')
-        dst_folder.config(state='disabled')
+    file_name = file.rsplit(".", 1)[0]
+    return file_name + ending if file.endswith(condition) else file_name + condition
 
 
-def p_dir_act(event):
+def rename_start(file: str, output_dir: tp.Optional[str])-> str:
     """
-    Action converts and checks input/root directory ony validity
-    :param event: event
-    :return: None
+    rename of the root folder for output if that one has been specified
+    :param file: str file name
+    :param output_dir: str new root folder name, empty if nothing shall be done
+    :return: str new name
     """
-    p_dir = src_folder.get()
-
-    if p_dir.startswith("~"):
-        p_dir = r"/home/" + getpass.getuser() + r"/" + p_dir.split("/", 1)[-1]
-        src_dir_val.set(p_dir)
-    assert os.path.isdir(p_dir)
+    return output_dir + file.rsplit("/", 1)[-1] if output_dir else file
 
 
-def start_act(event):
+class Application(tk.Frame):
     """
-    Action: Start of retrieving files and convertion
-    :param event: event
-    :return: None
+    A GUI for the conversion
     """
-    try:
-        p_dir_act(event)
-    except AssertionError:
-        top = tk.Toplevel()
-        top.title("Order")
+    def __init__(self, master=None):
+        tk.Frame.__init__(self, master)
+        self.grid()
 
-        err_msg: str = 'Der Quellordner: "' + src_folder.get() + '" ist kein Ordner!'
-        msg = tk.Message(top, text=err_msg)
-        msg.pack()
+        # create attributes
+        # for getting source folder
+        self.src_label = tk.Label(self.master, text="Quellorder:")
+        self.src_dir_val = tk.StringVar()
+        self.src_folder = tk.Entry(self.master, textvariable=self.src_dir_val)
 
-        msg_button = tk.Button(top, text="Ok", command=top.destroy)
-        msg_button.pack()
-        return
+        # for getting destination folder
+        self.dst_opt_check_val = tk.IntVar()
+        self.dst_opt_check = tk.Checkbutton(self.master, text="Ausgabeordner selbst wählen?",
+                                            variable=self.dst_opt_check_val, onvalue=1, offvalue=0)
+        self.dst_label = tk.Label(self.master, text="Ausgabeordner:", state='disable')
+        self.dst_folder_val = tk.StringVar()
+        self.dst_folder = tk.Entry(self.master, state='disabled', textvariable=self.dst_folder_val)
 
-    if dst_opt_check_val.get():
+        self.ratio = tk.Label(self.master)
+        self.start_button = tk.Button(self.master, text="start encoding")
+        self.done = tk.IntVar()
+        self.file_num = tk.IntVar(value=0)
+
+        self.create_widgets()
+
+    def create_widgets(self):
+        # label & Entry to ask for source folder
+        self.src_label.grid(row=0, column=0, sticky="w")
+        self.src_folder.grid(row=0, column=1)
+
+        # Checkbox etc. to ask whether output directory is specified
+        self.dst_opt_check.grid(row=1, column=0)
+        self.dst_opt_check.bind("<Button-1>", self.opt_act)
+
+        # label & Entry to ask for output folder
+        self.dst_label.grid(row=2, column=0, sticky="w")
+        self.dst_folder.grid(row=2, column=1)
+
+        # start button for the conversion process
+        self.start_button.grid(row=3, column=2, sticky="se")
+        self.start_button.bind("<Button-1>", self.start_act)
+
+        # Label to show how many files been converted
+        # functionally does not work
+        self.ratio.grid(row=3, column=0, sticky="sw")
+
+        self.done = tk.IntVar()
+        self.done.set(0)
+        self.done.trace("w", self.ratio_act)
+
+    def start_act(self, event):
+        """
+        Action: Start of retrieving files and convertion
+        :param event: event
+        :return: None
+        """
         try:
-            o_dir_act(event)
+            self.p_dir_act(event)
         except AssertionError:
             top = tk.Toplevel()
             top.title("Order")
 
-            err_msg = 'Der Zielordner"' + src_folder.get() + '" ist kein Ordner'
+            err_msg: str = 'Der Quellordner: "' + self.src_folder.get() + '" ist kein Ordner!'
             msg = tk.Message(top, text=err_msg)
             msg.pack()
+
             msg_button = tk.Button(top, text="Ok", command=top.destroy)
             msg_button.pack()
+            return
 
-    start_button.config(state='disabled')
-    p_dir = src_folder.get()
+        if self.dst_opt_check_val.get():
+            try:
+                self.o_dir_act(event)
+            except AssertionError:
+                top = tk.Toplevel()
+                top.title("Order")
 
-    # files will contain all files to be changed
-    files: list = []
+                err_msg = 'Der Zielordner"' + self.src_folder.get() + '" ist kein Ordner'
+                msg = tk.Message(top, text=err_msg)
+                msg.pack()
+                msg_button = tk.Button(top, text="Ok", command=top.destroy)
+                msg_button.pack()
 
-    create_audiofile_list(files, p_dir, False, True)
+        self.start_button.config(state='disabled')
+        p_dir = self.src_folder.get()
 
-    # http.//chriskiehl.com/article-parallelism-in-one-line/
-    # open Pool with one process less than cores, one less than standard
-    # pool = mp_thread.Pool(mp.cpu_count()-1)
-    pool = mp_thread.Pool()
-    pool.map(convert, files)
+        # files will contain all files to be changed
+        all_files = get_file_names(p_dir)
+        in_out_files: list = create_io_struct_list(all_files, rename_start, rename_ending, str(self.dst_folder_val))
 
-    pool.close()
-    pool.join()
+        # sorting files?
 
+        # doing the slow stuff in parallel
 
-def ratio_act(event):
-    """
-    Action: calculate + refresh ratio of converted files
-    DOES NOT WORK
-    :param event: event
-    :return: None
-    """
-    ratio.config(text=str(done.get()) + r"/" + str(file_num.get()))
+        # http.//chriskiehl.com/article-parallelism-in-one-line/
+        # open Pool with mp_thread.cpu_count() cores
+        pool = mp_thread.Pool()
 
+        # pool.map can only work on one iterable
+        # create on iterable
+        pool_iterable = [(x, get_in_codec, get_in_bit_rate) for x in in_out_files]
+        pool.map(convert, pool_iterable)
+        pool.close()
+        pool.join()
 
-def o_dir_act(event):
-    """
-    Action converts and checks output directory ony validity
-    :param event: event
-    :return: None
-    """
-    out_dir = dst_folder_val.get()
+        # return to serial processing
+        # delete all files that have been converted
+        [os.remove(x[0]) for x in list(filter(lambda x: x[2], in_out_files))]
+        # prepare renaming
+        left_list = list(filter(lambda x: (isvideo(x) or isaudio(x)) and os.path.isfile(x), get_file_names(p_dir)))
+        name_list = map(lambda x: rename_ending(x, ".opus", ".ogg"), left_list)
 
-    if out_dir.startswith("~"):
-        out_dir = r"/home/" + getpass.getuser() + r"/" + out_dir.split("/", 1)[-1]
-        dst_folder_val.set(out_dir)
+        # rename
+        map(lambda x, y: os.rename(x, y), left_list, name_list)
 
-    assert os.path.isdir(out_dir)
+    def ratio_act(self, event):
+        """
+        Action: calculate + refresh ratio of converted files
+        DOES NOT WORK
+        :param event: event
+        :return: None
+        """
+        self.ratio.config(text=str(self.done.get()) + r"/" + str(self.file_num.get()))
+
+    def o_dir_act(self, event):
+        """
+        Action converts and checks output directory ony validity
+        :param event: event
+        :return: None
+        """
+        out_dir = self.dst_folder_val.get()
+
+        if out_dir.startswith("~"):
+            out_dir = r"/home/" + getpass.getuser() + r"/" + out_dir.split("/", 1)[-1]
+            self.dst_folder_val.set(out_dir)
+
+        assert os.path.isdir(out_dir)
+
+    def opt_act(self, event):
+        """
+        shall enable/disable output directory choice
+        depending on Checkbox value
+        :param event: event
+        :return: None
+        """
+        if not self.dst_opt_check_val.get():
+
+            self.dst_label.config(state='active')
+            self.dst_folder.config(state='normal')
+        else:
+            self.dst_label.config(state='disabled')
+            self.dst_folder.config(state='disabled')
+
+    def p_dir_act(self, event):
+        """
+        Action converts and checks input/root directory ony validity
+        :param event: event
+        :return: None
+        """
+        p_dir = self.src_folder.get()
+
+        if p_dir.startswith("~"):
+            p_dir = r"/home/" + getpass.getuser() + r"/" + p_dir.split("/", 1)[-1]
+            self.src_dir_val.set(p_dir)
+        assert os.path.isdir(p_dir)
 
 
 if __name__ == '__main__':
@@ -245,47 +326,9 @@ if __name__ == '__main__':
     """
     # Tkinter gui description:
 
-    root = tk.Tk()
-    root.title("x to opus - Folder Conversion")
-    root.resizable(0, 0)
-
-    # label & Entry to ask for source folder
-    src_label = tk.Label(root, text="Quellorder:")
-    src_label.grid(row=0, column=0, sticky="w")
-
-    src_dir_val = tk.StringVar()
-    src_folder = tk.Entry(root, textvariable=src_dir_val)
-    src_folder.grid(row=0, column=1)
-
-    # Checkbox etc. to ask whether output directory is specified
-    dst_opt_check_val = tk.IntVar()
-    dst_opt_check = tk.Checkbutton(root, text="Ausgabeordner", variable=dst_opt_check_val, onvalue=1, offvalue=0)
-    dst_opt_check.grid(row=1, column=0)
-    dst_opt_check.bind("<Button-1>", opt_act)
-
-    # label & Entry to ask for output folder
-    dst_label = tk.Label(root, text="Zielordner:", state='disable')
-    dst_label.grid(row=2, column=0, sticky="w")
-
-    dst_folder_val = tk.StringVar()
-    dst_folder = tk.Entry(root, state='disabled', textvariable=dst_folder_val)
-    dst_folder.grid(row=2, column=1)
-
-    # start button for the conversion process
-    start_button = tk.Button(root, text="start encoding")
-    start_button.grid(row=3, column=2, sticky="se")
-    start_button.bind("<Button-1>", start_act)
-
-    # Label to show how many files been converted
-    # functionally does not work
-    ratio = tk.Label(root)
-    ratio.grid(row=3, column=0, sticky="sw")
-
-    done = tk.IntVar()
-    done.set(0)
-    done.trace("w", ratio_act)
-
-    file_num = tk.IntVar(value=0)
+    app = Application()
+    app.master.title("x to opus - Folder Conversion")
+    app.master.resizable(0, 0)
 
     # start
-    root.mainloop()
+    app.mainloop()

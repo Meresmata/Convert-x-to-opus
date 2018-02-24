@@ -4,9 +4,13 @@ import multiprocessing.dummy as mp_thread
 import os
 import subprocess
 import typing as tp
-
 import ffmpy
+"""
+convertes all audio, movie files
+of a given root directory into .opus
 
+requires: ffmpeg incl. libopus
+"""
 
 def isvideo(file: str)->bool:
     """
